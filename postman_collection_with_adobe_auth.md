@@ -127,10 +127,10 @@
 					}
 				},
 				"url": {
-					"raw": "https://author-p175019-e1875092.adobeaemcloud.com/content/api/v1/disclosures",
+					"raw": "",
 					"protocol": "https",
 					"host": [
-						"author-p175019-e1875092",
+						"",
 						"adobeaemcloud",
 						"com"
 					],
