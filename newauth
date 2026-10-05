@@ -1,0 +1,82 @@
+AEM Authentication — Connector Requirements
+5 Oct 2026 · @Refold CS
+What a custom connector needs in order to authenticate against Adobe Experience Manager as a Cloud Service.
+Overview
+This workflow authenticates to AEM using Adobe OAuth Server-to-Server (the client_credentials grant). It does not use the retired Service Account (JWT) flow.
+The flow is straight-line, with no signing and no refresh step:
+1. POST the four credential fields to the token endpoint.
+2. Read access_token from the response.
+3. Send it as Authorization: Bearer <token> on every AEM request.
+Requests target the AEM author tier. Every value below is environment-specific and set by the operator.
+Endpoints
+
+Pattern
+Set by
+Token endpoint
+https://ims-<region>.adobelogin.com/ims/token/v3
+Adobe; region is fixed per org
+AEM base URL
+https://author-p<program>-e<environment>.adobeaemcloud.com
+Operator, per environment
+Both are configuration, not secrets. Store the base URL as a complete host so request paths can be appended directly.
+Request fields
+Four fields, all required, sent as application/x-www-form-urlencoded in the POST body:
+Field
+Required
+Value
+grant_type
+Yes
+Constant: client_credentials
+client_id
+Yes
+From the Developer Console credential
+client_secret
+Yes
+From the same credential — secret, never committed
+scope
+Yes
+Comma-separated list from the same credential; must include the AEM content-fragment management scope, or calls return 403 with a valid token
+Nothing else is needed. No private key, no technicalAccountId, no orgId — those belong to the retired JWT flow.
+Sample request
+POST /ims/token/v3 HTTP/1.1
+Host: ims-<region>.adobelogin.com
+Content-Type: application/x-www-form-urlencoded
+
+grant_type=client_credentials&client_id=<client_id>&client_secret=<client_secret>&scope=<scope_1>%2C<scope_2>%2C<scope_3>
+As curl:
+curl -X POST "https://ims-<region>.adobelogin.com/ims/token/v3" \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  --data-urlencode "grant_type=client_credentials" \
+  --data-urlencode "client_id=<client_id>" \
+  --data-urlencode "client_secret=<client_secret>" \
+  --data-urlencode "scope=<comma-separated scopes>"
+The scope list is one field holding comma-separated values, not a repeated field. Send no Authorization header on this call — the credentials travel in the body.
+Response fields
+Field
+Use
+access_token
+Send as Authorization: Bearer <token> on every AEM request
+token_type
+bearer
+expires_in
+Lifetime in seconds (~86400). Cache the token and re-request before it expires.
+Sample response
+{
+  "access_token": "eyJhbGciOiJSUzI1NiIsIng1dSI6...",
+  "token_type": "bearer",
+  "expires_in": 86399
+}
+On failure IMS returns HTTP 400 with error and error_description. A wrong secret gives invalid_client; a scope the credential does not hold gives invalid_scope.
+Token lifecycle
+There is no refresh token. The client credentials grant has no refresh step — to renew, re-send the same request body to the same endpoint.
+Refresh rules for the connector:
+• Cache the token keyed on client_id + scope, with the absolute expiry computed at fetch time (now + expires_in).
+• Renew early. Treat the token as expired a margin before expires_in — 5 minutes is a safe default — so a long-running request never crosses the boundary mid-flight.
+• Single-flight. When several calls find the cache empty at once, let one fetch and have the rest wait on it. Parallel workers otherwise stampede the token endpoint.
+• Renew on 401, once. A 401 from AEM means the token was rejected: discard the cached token, fetch a new one, retry the request once. A second 401 is a credential problem, not an expiry problem — surface it.
+• Do not retry a 403. That is an authorization failure, not an auth failure: the token is valid but the credential lacks the scope or the product profile. Retrying will not fix it.
+Tokens are bearer credentials — treat a cached token with the same care as the secret. Keep it in memory, never on disk or in logs.
+Using the token
+Every AEM request carries the token in a single header:
+Authorization: Bearer <access_token>
+Nothing else about the request changes. AEM validates the token against IMS, resolves the technical account to a repository principal, and applies that principal's permissions — so a valid token with insufficient product-profile access still returns 403.
